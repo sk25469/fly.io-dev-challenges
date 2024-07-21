@@ -102,9 +102,11 @@ func main() {
 		}
 
 		if !search(list, floatValue) {
+			mut.Lock()
 			list = append(list, floatValue)
 			slices.Sort(list)
 			bfs(n.ID(), n, body)
+			mut.Unlock()
 		}
 		delete(body, "message")
 		body["type"] = "broadcast_ok"
