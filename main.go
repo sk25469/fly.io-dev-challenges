@@ -5,12 +5,17 @@ import (
 	"fmt"
 	"maelstrom-broadcast/pkg/server"
 	"os"
+	"slices"
 	"sort"
 	"sync"
 
 	maelstrom "github.com/jepsen-io/maelstrom/demo/go"
 	log "github.com/sirupsen/logrus"
 )
+
+// n req
+// m nodes
+// n * m * log(x)
 
 type Topology struct {
 	Type     string              `json:"type"`
@@ -98,6 +103,7 @@ func main() {
 
 		if !search(list, floatValue) {
 			list = append(list, floatValue)
+			slices.Sort(list)
 			bfs(n.ID(), n, body)
 		}
 		delete(body, "message")
