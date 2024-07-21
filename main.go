@@ -17,9 +17,10 @@ type Topology struct {
 	Topology map[string][]string `json:"topology"`
 }
 
-var values map[string][]float64 = make(map[string][]float64)
 var graph map[string][]string = make(map[string][]string)
 var nodes []string
+
+var list []float64 = make([]float64, 0)
 
 var logger *log.Logger
 var mut sync.RWMutex
@@ -29,15 +30,7 @@ func search(numbers []float64, value float64) bool {
 	return index < len(numbers) && numbers[index] == value
 }
 
-func bfs2(from string) {
-	for _, node := range nodes {
-		if node != from {
-			replicateData(from, node)
-		}
-	}
-}
-
-func bfs(from string) {
+func bfs(from string, n *maelstrom.Node, body map[string]any) {
 	visited := make(map[string]bool)
 	queue := make([]string, 0)
 	queue = append(queue, from)
@@ -50,29 +43,15 @@ func bfs(from string) {
 		for _, neighbor := range graph[node] {
 			if !visited[neighbor] {
 				visited[neighbor] = true
-				replicateData(node, neighbor)
+				replicateData(neighbor, n, body)
 				queue = append(queue, neighbor)
 			}
 		}
 	}
 }
 
-func replicateData(from, to string) {
-
-	currentNodeValues := values[from]
-	nextNodeValues := values[to]
-
-	for _, val := range currentNodeValues {
-		if !search(nextNodeValues, val) {
-			nextNodeValues = append(nextNodeValues, val)
-		}
-	}
-	sort.Float64s(nextNodeValues)
-	values[to] = nextNodeValues
-
-	if len(currentNodeValues) > 8 && len(nextNodeValues) > 2 {
-		fmt.Printf("to %s has messages %v ------------------  from %s has messages %v\n", to, values[to], from, values[from])
-	}
+func replicateData(to string, n *maelstrom.Node, body map[string]any) {
+	n.Send(to, body)
 }
 
 func initLogger() {
@@ -117,19 +96,15 @@ func main() {
 			return fmt.Errorf("value is not of type float64")
 		}
 
-		body["type"] = "broadcast_ok"
-		mut.Lock()
-		currentValues := values[n.ID()]
-		// if !search(currentValues, floatValue) {
-		currentValues = append(currentValues, floatValue)
-		sort.Float64s(currentValues)
-		values[n.ID()] = currentValues
-		bfs2(n.ID())
-		// }
-		mut.Unlock()
+		if !search(list, floatValue) {
+			list = append(list, floatValue)
+			bfs(n.ID(), n, body)
+		}
 		delete(body, "message")
+		body["type"] = "broadcast_ok"
 
 		return n.Reply(msg, body)
+
 	})
 
 	n.Handle(tests[3], func(msg maelstrom.Message) error {
@@ -140,7 +115,7 @@ func main() {
 
 		body["type"] = "read_ok"
 		mut.RLock()
-		body["messages"] = values[n.ID()]
+		body["messages"] = list
 		mut.RUnlock()
 
 		return n.Reply(msg, body)
