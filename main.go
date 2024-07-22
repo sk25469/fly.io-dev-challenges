@@ -26,7 +26,7 @@ type Topology struct {
 
 const (
 	maxRetries    = 100
-	retryInterval = 100 * time.Millisecond
+	retryInterval = 1 * time.Second
 )
 
 var (
