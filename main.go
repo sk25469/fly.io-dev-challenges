@@ -26,7 +26,7 @@ var (
 	graph map[string][]string = make(map[string][]string)
 	// nodes             []string
 	list              []float64 = make([]float64, 0)
-	replicationStatus           = make(map[float64]map[string]bool)
+	replicationStatus           = make(map[string]map[float64]bool)
 	logger            *log.Logger
 	mut               sync.RWMutex
 )
@@ -57,31 +57,40 @@ func bfs(from string, n *maelstrom.Node, writeBody map[string]any) {
 }
 
 func markReplicated(neighbor string, data float64) {
-	// mut.Lock()
-	// defer mut.Unlock()
-	replicationStatus[data][neighbor] = true
+	mut.Lock()
+	defer mut.Unlock()
+	replicationStatus[neighbor][data] = true
 }
 
 func isReplicated(neighbor string, data float64) bool {
-	// mut.RLock()
-	// defer mut.RUnlock()
-	if _, exists := replicationStatus[data]; !exists {
-		replicationStatus[data] = make(map[string]bool)
+	mut.RLock()
+	defer mut.RUnlock()
+	if _, exists := replicationStatus[neighbor]; !exists {
+		replicationStatus[neighbor] = make(map[float64]bool)
 	}
-	return replicationStatus[data][neighbor]
+	return replicationStatus[neighbor][data]
 }
 
 func matchData(neighbor string, n *maelstrom.Node, writeBody map[string]any) {
 	newWriteBody := copyMap(writeBody)
 	for _, val := range list {
-		newWriteBody["message"] = val
-		n.RPC(neighbor, newWriteBody, func(msg maelstrom.Message) error {
-			// var body map[string]any
-			// if err := json.Unmarshal(msg.Body, &body); err != nil {
-			// 	return err
-			// }
-			return nil
-		})
+		// mut.Lock()
+		if !isReplicated(neighbor, val) {
+			newWriteBody["message"] = val
+			n.RPC(neighbor, newWriteBody, func(msg maelstrom.Message) error {
+				markReplicated(neighbor, val)
+				return nil
+			})
+		}
+		// mut.Unlock()
+	}
+}
+
+func insertData(floatValue float64, n *maelstrom.Node, body map[string]any) {
+	if !search(list, floatValue) {
+		list = append(list, floatValue)
+		slices.Sort(list)
+		go bfs(n.ID(), n, body)
 	}
 }
 
@@ -187,13 +196,7 @@ func main() {
 
 		bodyToSend := copyMap(body)
 
-		mut.Lock()
-		if !search(list, floatValue) {
-			list = append(list, floatValue)
-			slices.Sort(list)
-			go bfs(n.ID(), n, body)
-		}
-		mut.Unlock()
+		go insertData(floatValue, n, body)
 		delete(bodyToSend, "message")
 		bodyToSend["type"] = "broadcast_ok"
 
