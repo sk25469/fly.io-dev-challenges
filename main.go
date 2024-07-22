@@ -2,12 +2,14 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"maelstrom-broadcast/pkg/server"
 	"os"
 	"slices"
 	"sort"
 	"sync"
+	"time"
 
 	maelstrom "github.com/jepsen-io/maelstrom/demo/go"
 	log "github.com/sirupsen/logrus"
@@ -21,6 +23,11 @@ type Topology struct {
 	Type     string              `json:"type"`
 	Topology map[string][]string `json:"topology"`
 }
+
+const (
+	maxRetries    = 100
+	retryInterval = 100 * time.Millisecond
+)
 
 var (
 	graph map[string][]string = make(map[string][]string)
@@ -36,22 +43,10 @@ func search(numbers []float64, value float64) bool {
 	return index < len(numbers) && numbers[index] == value
 }
 
-func bfs(from string, n *maelstrom.Node, writeBody map[string]any) {
-	visited := make(map[string]bool)
-	queue := make([]string, 0)
-	queue = append(queue, from)
-	visited[from] = true
-
-	for len(queue) > 0 {
-		node := queue[0]
-		queue = queue[1:]
-
-		for _, neighbor := range graph[node] {
-			if !visited[neighbor] {
-				visited[neighbor] = true
-				go matchData(neighbor, n, writeBody)
-				queue = append(queue, neighbor)
-			}
+func bfs(from string, n *maelstrom.Node, val float64, writeBody map[string]any) {
+	for _, neighbor := range graph[from] {
+		if !isReplicated(neighbor, val) {
+			go matchData(neighbor, n, val, writeBody)
 		}
 	}
 }
@@ -71,18 +66,44 @@ func isReplicated(neighbor string, data float64) bool {
 	return replicationStatus[neighbor][data]
 }
 
-func matchData(neighbor string, n *maelstrom.Node, writeBody map[string]any) {
-	newWriteBody := copyMap(writeBody)
-	for _, val := range list {
-		// mut.Lock()
-		if !isReplicated(neighbor, val) {
-			newWriteBody["message"] = val
-			n.RPC(neighbor, newWriteBody, func(msg maelstrom.Message) error {
-				markReplicated(neighbor, val)
-				return nil
-			})
+func sendAndConfirmReplication(neighbor string, n *maelstrom.Node, writeBody map[string]any) error {
+	ackCh := make(chan error, 1)
+
+	n.RPC(neighbor, writeBody, func(msg maelstrom.Message) error {
+		var res map[string]any
+		if err := json.Unmarshal(msg.Body, &res); err != nil {
+			ackCh <- err
+			return err
 		}
-		// mut.Unlock()
+		if res["type"] == "broadcast_ok" {
+			ackCh <- nil
+		} else {
+			ackCh <- errors.New("unexpected response")
+		}
+		return nil
+	})
+
+	select {
+	case err := <-ackCh:
+		return err
+	case <-time.After(retryInterval):
+		return errors.New("timeout")
+	}
+}
+
+func matchData(neighbor string, n *maelstrom.Node, val float64, writeBody map[string]any) {
+	newWriteBody := copyMap(writeBody)
+	newWriteBody["message"] = val
+	retries := 0
+
+	for retries < maxRetries {
+		err := sendAndConfirmReplication(neighbor, n, newWriteBody)
+		if err == nil {
+			markReplicated(neighbor, val)
+			return
+		}
+		retries++
+		time.Sleep(retryInterval)
 	}
 }
 
@@ -90,57 +111,9 @@ func insertData(floatValue float64, n *maelstrom.Node, body map[string]any) {
 	if !search(list, floatValue) {
 		list = append(list, floatValue)
 		slices.Sort(list)
-		go bfs(n.ID(), n, body)
+		go bfs(n.ID(), n, floatValue, body)
 	}
 }
-
-// func sendRead(to string, n *maelstrom.Node, body map[string]any) {
-// 	// msg, err := n.SyncRPC(context.Background(), to, body)
-// 	// if err != nil {
-// 	// 	fmt.Printf("error sending read req to %v: [%v]", to, err)
-// 	// 	return err
-// 	// } else {
-// 	// 	var res map[string]any
-// 	// 	if err := json.Unmarshal(msg.Body, &res); err != nil {
-// 	// 		return err
-// 	// 	}
-
-// 	// 	var nextData []float64
-// 	// 	if messages, ok := res["messages"].([]interface{}); ok {
-// 	// 		for _, v := range messages {
-// 	// 			if floatVal, ok := v.(float64); ok {
-// 	// 				nextData = append(nextData, floatVal)
-// 	// 			}
-// 	// 		}
-// 	// 	}
-// 	// if len(nextData) > 0 {
-// 	// 	fmt.Printf("nextdata: %v", nextData)
-// 	// }
-
-// 	go matchData(to, n, body)
-// 	// }
-// 	// return nil
-// }
-
-// func replicateData(to string, n *maelstrom.Node, body map[string]any) error {
-// 	replicated := false
-// 	for !replicated {
-// 		msg, err := n.SyncRPC(context.Background(), to, body)
-// 		if err != nil {
-// 			replicated = false
-// 		} else {
-// 			var res map[string]any
-// 			if err := json.Unmarshal(msg.Body, &res); err != nil {
-// 				return err
-// 			}
-// 			if res["type"] == "broadcast_ok" {
-// 				replicated = true
-// 				return nil
-// 			}
-// 		}
-// 	}
-// 	return nil
-// }
 
 func copyMap(m map[string]any) map[string]any {
 	newMap := make(map[string]any)
