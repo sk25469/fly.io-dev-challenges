@@ -59,10 +59,9 @@ func bfs(from string, n *maelstrom.Node, writeBody map[string]any, readBody map[
 
 func matchData(currData []float64, nextData []float64, neighbor string, n *maelstrom.Node, writeBody map[string]any) {
 	// check for all the data in currnode
-
+	newWriteBody := copyMap(writeBody)
 	for _, val := range currData {
 		if !search(nextData, val) {
-			newWriteBody := copyMap(writeBody)
 			newWriteBody["message"] = val
 			n.Send(neighbor, newWriteBody)
 		}
@@ -70,9 +69,7 @@ func matchData(currData []float64, nextData []float64, neighbor string, n *maels
 
 	for _, val := range nextData {
 		if !search(currData, val) {
-			mut.Lock()
 			list = append(list, val)
-			mut.Unlock()
 		}
 	}
 }
