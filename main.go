@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"maelstrom-broadcast/pkg/server"
@@ -35,7 +36,7 @@ func search(numbers []float64, value float64) bool {
 	return index < len(numbers) && numbers[index] == value
 }
 
-func bfs(from string, n *maelstrom.Node, body map[string]any) {
+func bfs(from string, n *maelstrom.Node, writeBody map[string]any, readBody map[string]any) {
 	visited := make(map[string]bool)
 	queue := make([]string, 0)
 	queue = append(queue, from)
@@ -48,28 +49,91 @@ func bfs(from string, n *maelstrom.Node, body map[string]any) {
 		for _, neighbor := range graph[node] {
 			if !visited[neighbor] {
 				visited[neighbor] = true
-				replicateData(neighbor, n, body)
+				go replicateData(neighbor, n, writeBody)
+				go sendRead(neighbor, n, readBody, writeBody)
 				queue = append(queue, neighbor)
 			}
 		}
 	}
 }
 
-func replicateData(to string, n *maelstrom.Node, body map[string]any) {
-	n.Send(to, body)
+func matchData(currData []float64, nextData []float64, neighbor string, n *maelstrom.Node, writeBody map[string]any) {
+	// check for all the data in currnode
+
+	for _, val := range currData {
+		if !search(nextData, val) {
+			newWriteBody := copyMap(writeBody)
+			newWriteBody["message"] = val
+			n.Send(neighbor, newWriteBody)
+		}
+	}
+
+	for _, val := range nextData {
+		if !search(currData, val) {
+			mut.Lock()
+			list = append(list, val)
+			mut.Unlock()
+		}
+	}
+}
+
+func sendRead(to string, n *maelstrom.Node, readBody map[string]any, writeBody map[string]any) error {
+	msg, err := n.SyncRPC(context.Background(), to, readBody)
+	if err != nil {
+		fmt.Printf("error sending read req to %v: [%v]", to, err)
+		return err
+	} else {
+		var res map[string]any
+		if err := json.Unmarshal(msg.Body, &res); err != nil {
+			return err
+		}
+
+		var nextData []float64
+		if messages, ok := res["messages"].([]interface{}); ok {
+			for _, v := range messages {
+				if floatVal, ok := v.(float64); ok {
+					nextData = append(nextData, floatVal)
+				}
+			}
+		}
+
+		go matchData(list, nextData, to, n, writeBody)
+	}
+	return nil
+}
+
+func replicateData(to string, n *maelstrom.Node, body map[string]any) error {
+	replicated := false
+	for !replicated {
+		msg, err := n.SyncRPC(context.Background(), to, body)
+		if err != nil {
+			replicated = false
+		} else {
+			var res map[string]any
+			if err := json.Unmarshal(msg.Body, &res); err != nil {
+				return err
+			}
+			if res["type"] == "broadcast_ok" {
+				replicated = true
+				return nil
+			}
+		}
+	}
+	return nil
+}
+
+func copyMap(m map[string]any) map[string]any {
+	newMap := make(map[string]any)
+	for k, v := range m {
+		newMap[k] = v
+	}
+	return newMap
 }
 
 func initLogger() {
 	logger = log.New()
-	logFile, err := os.OpenFile("./maelstrom.log", os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0666)
-	if err != nil {
-		log.Fatalf("Failed to open log file: %v", err)
-	}
+	logFile, _ := os.OpenFile("./maelstrom.log", os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0666)
 	logger.SetOutput(logFile)
-	logger.SetLevel(log.DebugLevel)
-	logger.SetFormatter(&log.TextFormatter{
-		FullTimestamp: true,
-	})
 }
 
 func main() {
@@ -77,6 +141,15 @@ func main() {
 
 	n := maelstrom.NewNode()
 	tests := []string{"echo", "generate", "broadcast", "read", "topology"}
+
+	n.Handle(tests[0], func(msg maelstrom.Message) error {
+		var body map[string]any
+		if err := json.Unmarshal(msg.Body, &body); err != nil {
+			return err
+		}
+		body["type"] = "echo_ok"
+		return n.Reply(msg, body)
+	})
 
 	n.Handle(tests[1], func(msg maelstrom.Message) error {
 		var body map[string]any
@@ -101,18 +174,22 @@ func main() {
 			return fmt.Errorf("value is not of type float64")
 		}
 
+		bodyToSend := copyMap(body)
+		readBody := copyMap(body)
+		// delete(readBody, "message")
+		// readBody["type"] = "read"
+
+		mut.Lock()
 		if !search(list, floatValue) {
-			mut.Lock()
 			list = append(list, floatValue)
 			slices.Sort(list)
-			bfs(n.ID(), n, body)
-			mut.Unlock()
+			go bfs(n.ID(), n, body, readBody)
 		}
-		delete(body, "message")
-		body["type"] = "broadcast_ok"
+		mut.Unlock()
+		delete(bodyToSend, "message")
+		bodyToSend["type"] = "broadcast_ok"
 
-		return n.Reply(msg, body)
-
+		return n.Reply(msg, bodyToSend)
 	})
 
 	n.Handle(tests[3], func(msg maelstrom.Message) error {
@@ -120,6 +197,13 @@ func main() {
 		if err := json.Unmarshal(msg.Body, &body); err != nil {
 			return err
 		}
+
+		// bodyToSend := copyMap(body)
+
+		// fmt.Printf("body: %v", bodyToSend)
+		// for key, value := range bodyToSend {
+		// 	fmt.Printf("key: %v ----------- value: %v\n", key, value)
+		// }
 
 		body["type"] = "read_ok"
 		mut.RLock()
