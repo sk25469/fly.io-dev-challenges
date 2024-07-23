@@ -4,13 +4,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"maelstrom-broadcast/pkg/server"
 	"os"
 	"slices"
 	"sort"
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	maelstrom "github.com/jepsen-io/maelstrom/demo/go"
 	log "github.com/sirupsen/logrus"
 )
@@ -129,6 +129,11 @@ func initLogger() {
 	logger.SetOutput(logFile)
 }
 
+func generateUniqueId() string {
+	id := uuid.New()
+	return id.String()
+}
+
 func main() {
 	initLogger()
 
@@ -150,7 +155,7 @@ func main() {
 			return err
 		}
 		body["type"] = "generate_ok"
-		body["id"] = server.GenerateUniqueId()
+		body["id"] = generateUniqueId()
 		return n.Reply(msg, body)
 	})
 
